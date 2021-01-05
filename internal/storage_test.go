@@ -6,8 +6,9 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"os"
 	"testing"
+
+	"golang.org/x/exp/mmap"
 )
 
 func generateActiveSegment() string {
@@ -44,7 +45,7 @@ func generateActiveSegment() string {
 		},
 	}
 
-	fd, err := ioutil.TempFile("/tmp", ActiveSegmentFilename)
+	fd, err := ioutil.TempFile("/tmp", activeSegmentFilename)
 
 	defer fd.Close()
 
@@ -62,11 +63,19 @@ func generateActiveSegment() string {
 	return fd.Name()
 }
 
+func TestLogWriter(t *testing.T) {
+
+}
+
+func TestLogReader(t *testing.T) {
+
+}
+
 func TestLoadKeydirStructure(t *testing.T) {
 	path := generateActiveSegment()
-	var fd *os.File
+	var fd *mmap.ReaderAt
 	var err error
-	if fd, err = os.Open(path); err != nil {
+	if fd, err = mmap.Open(path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,19 +87,14 @@ func TestLoadKeydirStructure(t *testing.T) {
 
 	var data KVStoreCommand
 
-	fd.Seek(0, io.SeekStart)
-
-	x, _ := fd.Seek(int64(0), io.SeekStart)
-
-	myreader := bufio.NewReader(fd)
+	myreader := bufio.NewReader(io.NewSectionReader(fd, 0, int64(fd.Len())))
 	gobDecoder := gob.NewDecoder(myreader)
 	gobDecoder.Decode(nil)
 
-	x, _ = fd.Seek(int64(entry.offset), io.SeekStart)
-	myreader.Reset(fd)
+	myreader.Reset(io.NewSectionReader(fd, entry.offset, int64(fd.Len()-int(entry.offset))))
 	if err := gobDecoder.Decode(&data); err != nil {
 		t.Fatal(err)
 	}
-	t.Log(data.Value, x)
+	t.Log(data.Value)
 
 }
