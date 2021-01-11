@@ -1,209 +1,136 @@
 package internal
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/gob"
 	"fmt"
-	"io"
 	"io/ioutil"
-	"log"
-	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
-	"golang.org/x/exp/mmap"
+	"pingcap.com/kvs/internal/segments"
 )
 
 const (
 	activeSegmentFilename = "current_segment.dat"
-	segmentFilenameFmt    = "segment_%5d.dat"
+	segmentFilenameFmt    = "segment_%05d.dat"
 )
 
-type logSegment struct {
-	fd      *os.File
-	reader  *mmap.ReaderAt
-	current bool
-	decoder *gob.Decoder
-	encoder *gob.Encoder
-}
-
-func NewLogSegment(basePath string) (*logSegment, error) {
-	var fd *os.File
-	var reader *mmap.ReaderAt
-	var current bool
-	var err error
-
-	// already exists a previously active segment
-	if strings.Contains("current", basePath) {
-		fd, err = os.OpenFile(basePath, os.O_APPEND, os.ModeAppend)
-		if err != nil {
-			return nil, fmt.Errorf("error opening active segment: %v", err)
-		}
-		reader, err = mmap.Open(basePath)
-		if err != nil {
-			return nil, fmt.Errorf("error opening active segment: %v", err)
-		}
-		current = true
-	} else {
-		reader, err = mmap.Open(basePath)
-		if err != nil {
-			return nil, fmt.Errorf("error opening segment file: %v", err)
-		}
-	}
-	encoder := gob.NewEncoder(fd)
-
-	decoder := gob.NewDecoder(fd)
-
-	return &logSegment{
-		fd:      fd,
-		reader:  reader,
-		decoder: decoder,
-		encoder: encoder,
-		current: current,
-	}, nil
-}
-
-func (ls *logSegment) appendEntry(cmd KVStoreCommand) (*keyDirEntry, error) {
-	if err := ls.encoder.Encode(cmd); err != nil {
-		return nil, fmt.Errorf("error appending command to the log: %v", err)
-	}
-
-	//ftell to get last position
-	offset, err := ls.fd.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return nil, fmt.Errorf("error retrieving offset from appended entry: %v", err)
-	}
-	return &keyDirEntry{
-		offset: offset,
-	}, nil
+type LogStorage interface {
+	BuildKeyDirTable() (*segments.KeyDirTable, error)
+	ReadKeyDirEntry(entry *segments.KeyDirEntry) ([]byte, error)
+	Append(key []byte, value []byte, kdt *segments.KeyDirTable) error
+	Close() error
 }
 
 type logBasedStorage struct {
-	dataFiles   map[string]*logSegment
-	currentFile *os.File
-	threshold   int
+	dataFiles      map[int]*segments.LogSegment
+	currentSegment *segments.LogSegment
+	threshold      int
 }
-
-type keyDirEntry struct {
-	fileID string
-	offset int64
-	vsize  int
-}
-
-type keyDirTable map[string]keyDirEntry
 
 func NewLogBasedStorage(path string) (*logBasedStorage, error) {
-	var dataFiles map[string]*logSegment
-	var currentFile *os.File
+	var currentSegment *segments.LogSegment
 
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
 		return nil, fmt.Errorf("error opening keydir folder: %v", err)
 	}
+
+	var active bool
+	dataFiles := make(map[int]*segments.LogSegment, len(files))
 	for _, f := range files {
 		if !f.IsDir() && !strings.Contains(f.Name(), lockFilename) {
-			segment, err := NewLogSegment(path)
+			if f.Name() == activeSegmentFilename {
+				active = true
+			}
+			fullPath := filepath.Join(path, f.Name())
+			segment, err := segments.NewLogSegment(fullPath, active)
 			if err != nil {
 				return nil, fmt.Errorf("error creating log segment for %s: %v", path, err)
 			}
-			dataFiles[path] = segment
+			segmentID := segments.SegmentID(fullPath, active)
+			dataFiles[segmentID] = segment
 		}
 	}
 
 	// No active segment exists
-	if len(dataFiles) == 0 {
-		currentFile, err = os.OpenFile(fmt.Sprintf("%s/%s", path, activeSegmentFilename), os.O_CREATE|os.O_APPEND, os.ModeAppend)
+	if len(dataFiles) == 0 || !active {
+		fullPath := filepath.Join(path, activeSegmentFilename)
+		currentSegment, err = segments.NewLogSegment(fullPath, true)
 		if err != nil {
 			return nil, fmt.Errorf("error opening active segment: %v", err)
 		}
 	}
 	return &logBasedStorage{
-		dataFiles:   dataFiles,
-		currentFile: currentFile,
+		dataFiles:      dataFiles,
+		currentSegment: currentSegment,
 	}, nil
 }
 
-func readSegment(segment *mmap.ReaderAt, filePath string) *keyDirTable {
-	kdt := make(keyDirTable)
-	var readItems int
-	buffer := bytes.NewBuffer([]byte{})
-	bufReader := bufio.NewReader(io.TeeReader(io.NewSectionReader(segment, 0, int64(segment.Len())), buffer))
-	gobDecoder := gob.NewDecoder(bufReader)
-	previous := 0
-	offset := 0
-	for {
-		var data KVStoreCommand
-		current := previous
-		buffered := bufReader.Buffered()
-		fmt.Printf("current %v previous %v buffered %v \n", current, previous, buffered)
-		if err := gobDecoder.Decode(&data); err != nil {
-			if err == io.EOF {
-				break
-			} else {
-				log.Fatalf("error reading segment: %v", err)
-			}
-		}
-		switch data.Command {
-		case SetKey:
-			kdt[data.Key] = keyDirEntry{
-				fileID: filePath,
-				offset: int64(offset),
-			}
-			break
-		case RemoveKey:
-			delete(kdt, data.Key)
-			break
-		}
-		previous = buffer.Len() - bufReader.Buffered()
-		offset += previous
-		fmt.Printf("** current %v offset %v buffered %v \n", buffer.Len(), offset, bufReader.Buffered())
-		buffer.Reset()
-		bufReader.Reset(io.TeeReader(io.NewSectionReader(segment, int64(offset), int64(segment.Len()-previous)), buffer))
-		readItems++
+func mergeTables(kdtSrc, kdtTgt segments.KeyDirTable) *segments.KeyDirTable {
+	if kdtSrc == nil {
+		return &kdtTgt
 	}
-	return &kdt
-}
-
-func mergeTables(kdtSrc, kdtTgt keyDirTable) *keyDirTable {
+	if kdtTgt == nil {
+		return &kdtSrc
+	}
 	for k, v := range kdtSrc {
 		kdtTgt[k] = v
 	}
 	return &kdtTgt
 }
 
-func (lbs *logBasedStorage) buildKeyDirTable() (*keyDirTable, error) {
+func (lbs *logBasedStorage) BuildKeyDirTable() (*segments.KeyDirTable, error) {
 
-	keys := make([]string, 0, len(lbs.dataFiles))
+	keys := make([]int, 0, len(lbs.dataFiles))
 	for k := range lbs.dataFiles {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	sort.Ints(keys)
 
-	var kdt keyDirTable
+	kdt := make(segments.KeyDirTable)
 	for _, k := range keys {
-		kdtTmp := readSegment(lbs.dataFiles[k].reader, k)
+		kdtTmp, err := lbs.dataFiles[k].ReadAll()
+		if err != nil {
+			return nil, fmt.Errorf("error building key dir table: %w", err)
+		}
 		kdt = *mergeTables(*kdtTmp, kdt)
 	}
 
 	return &kdt, nil
 }
 
-// func (lbs *logBasedStorage) valueForKeyDirEntry(kde *keyDirEntry) []byte {
-// 	fd := lbs.dataFiles[kde.fileID]
-// 	fd.Seek(int64(kde.offset), io.SeekStart)
-// 	var data KVStoreCommand
+func (lbs *logBasedStorage) ReadKeyDirEntry(entry *segments.KeyDirEntry) (value []byte, err error) {
+	if segment, ok := lbs.dataFiles[entry.FileID]; ok {
+		_, value, err = segment.ReadAt(entry.Offset, entry.Size)
+	} else {
+		_, value, err = lbs.currentSegment.ReadAt(entry.Offset, entry.Size)
+	}
 
-// 	fd.Seek(0, io.SeekStart)
-// 	myreader := bufio.NewReader(fd)
-// 	gobDecoder := gob.NewDecoder(myreader)
-// 	gobDecoder.Decode(nil)
+	return value, err
+}
 
-// 	fd.Seek(int64(kde.offset), io.SeekStart)
-// 	myreader.Reset(fd)
-// 	if err := gobDecoder.Decode(&data); err != nil {
-// 		return nil
-// 	}
+func (lbs *logBasedStorage) Append(key []byte, value []byte, kdt *segments.KeyDirTable) error {
+	kde, err := lbs.currentSegment.Write(key, value)
+	if err != nil {
+		return err
+	}
+	(*kdt)[string(key)] = kde
+	return nil
+}
 
-// 	return []byte(data.Value)
-// }
+func (lbs *logBasedStorage) rotateSegments() error {
+	return nil
+}
+
+func (lbs *logBasedStorage) Close() error {
+	for _, segment := range lbs.dataFiles {
+		if err := segment.Close(); err != nil {
+			return err
+		}
+	}
+	if err := lbs.currentSegment.Close(); err != nil {
+		return err
+	}
+	return nil
+}

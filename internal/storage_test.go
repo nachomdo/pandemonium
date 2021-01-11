@@ -1,100 +1,74 @@
 package internal
 
 import (
-	"bufio"
-	"encoding/gob"
-	"io"
+	"fmt"
 	"io/ioutil"
-	"log"
+	"os"
+	"strconv"
 	"testing"
 
-	"golang.org/x/exp/mmap"
+	"github.com/stretchr/testify/assert"
+
+	"pingcap.com/kvs/internal/segments/encoding"
 )
 
-func generateActiveSegment() string {
+func emptyDataFolder(t *testing.T) string {
+	basePath, err := ioutil.TempDir("/tmp", "bitcask*")
+	assert.NoError(t, err)
+	return basePath
+}
 
-	commands := []KVStoreCommand{
-		KVStoreCommand{
-			Key:     "1",
-			Value:   "Rosslyn",
-			Command: SetKey,
-		},
-		KVStoreCommand{
-			Key:     "2",
-			Value:   "Pophams",
-			Command: SetKey,
-		},
-		KVStoreCommand{
-			Key:     "3",
-			Value:   "Gentleman Baristas",
-			Command: SetKey,
-		},
-		KVStoreCommand{
-			Key:     "2",
-			Value:   "Pophams Bakery",
-			Command: SetKey,
-		},
-		KVStoreCommand{
-			Key:     "4",
-			Value:   "Starbucks Coffee",
-			Command: SetKey,
-		},
-		KVStoreCommand{
-			Key:     "4",
-			Command: RemoveKey,
-		},
-	}
+func existingDataFolderWithSegments(t *testing.T, segments int) string {
+	basePath, err := ioutil.TempDir("/tmp", "bitcask*")
+	assert.NoError(t, err)
 
-	fd, err := ioutil.TempFile("/tmp", activeSegmentFilename)
-
-	defer fd.Close()
-
-	if err != nil {
-		log.Fatalf("cannot generate active segment: %v", err)
-	}
-	gobEncoder := gob.NewEncoder(fd)
-	for _, cmd := range commands {
-
-		if err := gobEncoder.Encode(cmd); err != nil {
-			log.Fatalf("cannot write to active segment: %v", err)
+	for i := 1; i <= segments; i++ {
+		fd, err := os.Create(fmt.Sprintf("%s/segment_%05d.dat", basePath, i))
+		assert.NoError(t, err)
+		j := i * 10
+		max := j + 10
+		encoder := encoding.NewBitCaskEncoder(fd)
+		for ; j < max; j++ {
+			_, err := encoder.Write([]byte(strconv.Itoa(j)), []byte(fmt.Sprintf("value for key %d", j)))
+			assert.NoError(t, err)
 		}
-	}
 
-	return fd.Name()
+		fd.Close()
+	}
+	return basePath
 }
 
-func TestLogWriter(t *testing.T) {
+func TestLogBasedStorage(t *testing.T) {
+	path := existingDataFolderWithSegments(t, 5)
+	defer os.RemoveAll(path)
 
-}
+	lbs, err := NewLogBasedStorage(path)
+	assert.NoError(t, err)
+	kdt, err := lbs.BuildKeyDirTable()
+	assert.NoError(t, err)
+	assert.Equal(t, 50, len(*kdt))
+	t.Run("read the whole key dir structure", func(t *testing.T) {
+		for k, v := range *kdt {
+			rv, err := lbs.ReadKeyDirEntry(v)
+			assert.NoError(t, err)
+			assert.Equal(t, fmt.Sprintf("value for key %s", k), string(rv))
+		}
+	})
 
-func TestLogReader(t *testing.T) {
+	t.Run("append new data", func(t *testing.T) {
+		err := lbs.Append([]byte("9999"), []byte("value for key 9999"), kdt)
+		assert.NoError(t, err)
+		lastEntry := (*kdt)["9999"]
+		lastValue, err := lbs.ReadKeyDirEntry(lastEntry)
+		assert.NoError(t, err)
+		assert.Equal(t, "value for key 9999", string(lastValue))
+	})
 
-}
-
-func TestLoadKeydirStructure(t *testing.T) {
-	path := generateActiveSegment()
-	var fd *mmap.ReaderAt
-	var err error
-	if fd, err = mmap.Open(path); err != nil {
-		t.Fatal(err)
-	}
-
-	defer fd.Close()
-
-	kdt := *readSegment(fd, path)
-	t.Log(kdt)
-	entry, _ := kdt["3"]
-
-	var data KVStoreCommand
-
-	myreader := bufio.NewReader(io.NewSectionReader(fd, 0, int64(fd.Len())))
-	gobDecoder := gob.NewDecoder(myreader)
-	gobDecoder.Decode(nil)
-
-	myreader.Reset(io.NewSectionReader(fd, entry.offset, int64(fd.Len()-int(entry.offset))))
-	if err := gobDecoder.Decode(&data); err != nil {
-		t.Fatal(err)
-	}
-	t.Log(data.Value)
-
+	t.Run("close all resources", func(t *testing.T) {
+		assert.NoError(t, lbs.Close())
+		// storage closed cannot read values
+		entry := (*kdt)["10"]
+		_, err := lbs.ReadKeyDirEntry(entry)
+		assert.Error(t, err, "mmap: Closed")
+	})
 }

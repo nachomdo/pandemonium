@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	log "github.com/sirupsen/logrus"
+	"pingcap.com/kvs/internal/segments"
 )
 
 const (
@@ -21,6 +23,11 @@ const (
 	RemoveKey
 )
 
+var (
+	errInvalidKey             = errors.New("error due to invalid key")
+	errDeletingNonExistingKey = errors.New("error removing a key not present in the database")
+)
+
 type KVStoreCommand struct {
 	Key     string
 	Value   string
@@ -31,21 +38,21 @@ type KVStore interface {
 	io.Closer
 
 	// Set the value of a string key to a string
-	Set(key string, value string) error
+	Set(key string, value []byte) error
 
 	// Get the string value of the a string key. If the key does not exist, return nil.
-	Get(key string) (*string, error)
+	Get(key string) ([]byte, bool, error)
 
 	// Remove a given key
 	Remove(key string) error
 }
 
 type BitCaskStore struct {
-	logStore  *logBasedStorage
+	logStore  LogStorage
 	basePath  string
 	lockFile  *os.File
-	hashTable keyDirTable
-	mutex     chan struct{}
+	hashTable segments.KeyDirTable
+	mutex     sync.RWMutex
 }
 
 func OpenBitCaskStore(path string) (*BitCaskStore, error) {
@@ -61,7 +68,7 @@ func OpenBitCaskStore(path string) (*BitCaskStore, error) {
 		return nil, err
 	}
 
-	hashTable, err := logStore.buildKeyDirTable()
+	hashTable, err := logStore.BuildKeyDirTable()
 	if err != nil {
 		return nil, err
 	}
@@ -71,32 +78,44 @@ func OpenBitCaskStore(path string) (*BitCaskStore, error) {
 		logStore:  logStore,
 		lockFile:  lockFile,
 		hashTable: *hashTable,
-		mutex:     make(chan struct{}, 1),
+		mutex:     sync.RWMutex{},
 	}, nil
 }
 
 // Set the value of a string key to a string
-func (bcs *BitCaskStore) Set(key string, value string) error {
+func (bcs *BitCaskStore) Set(key string, value []byte) error {
 	log.Debugf("setting key %v value %v", key, value)
 
 	// coarse grained mutex to update hashtable and storage
-	bcs.mutex <- struct{}{}
+	bcs.mutex.Lock()
+	defer bcs.mutex.Unlock()
 
-	<-bcs.mutex
-	return nil
+	return bcs.logStore.Append([]byte(key), value, &bcs.hashTable)
 }
 
 // Get the string value of the a string key. If the key does not exist, return nil.
-func (bcs *BitCaskStore) Get(key string) *string {
+func (bcs *BitCaskStore) Get(key string) (value []byte, exists bool, err error) {
 	log.Debugf("getting key %v", key)
-
-	return nil
+	if entry, ok := bcs.hashTable[key]; ok {
+		value, err = bcs.logStore.ReadKeyDirEntry(entry)
+		return value, ok, err
+	}
+	return nil, false, nil
 }
 
 // Remove a given key
-func (*BitCaskStore) Remove(key string) error {
+func (bcs *BitCaskStore) Remove(key string) error {
 	log.Debugf("removing key %v", key)
-	return nil
+	if _, ok := bcs.hashTable[key]; ok {
+		bcs.mutex.Lock()
+		defer bcs.mutex.Unlock()
+		if err := bcs.logStore.Append([]byte(key), []byte{}, &bcs.hashTable); err != nil {
+			return err
+		}
+		delete(bcs.hashTable, key)
+		return nil
+	}
+	return errDeletingNonExistingKey
 }
 
 func (bcs *BitCaskStore) Close() error {
@@ -105,7 +124,6 @@ func (bcs *BitCaskStore) Close() error {
 		return err
 	}
 
-	// TODO: flush pending changes to disk
-
+	bcs.logStore.Close()
 	return nil
 }
