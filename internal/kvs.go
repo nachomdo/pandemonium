@@ -67,7 +67,7 @@ func OpenBitCaskStore(path string) (*BitCaskStore, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	logStore.StartSegmentsWatcher()
 	hashTable, err := logStore.BuildKeyDirTable()
 	if err != nil {
 		return nil, err
@@ -86,10 +86,6 @@ func OpenBitCaskStore(path string) (*BitCaskStore, error) {
 func (bcs *BitCaskStore) Set(key string, value []byte) error {
 	log.Debugf("setting key %v value %v", key, value)
 
-	// coarse grained mutex to update hashtable and storage
-	bcs.mutex.Lock()
-	defer bcs.mutex.Unlock()
-
 	return bcs.logStore.Append([]byte(key), value, &bcs.hashTable)
 }
 
@@ -107,8 +103,6 @@ func (bcs *BitCaskStore) Get(key string) (value []byte, exists bool, err error) 
 func (bcs *BitCaskStore) Remove(key string) error {
 	log.Debugf("removing key %v", key)
 	if _, ok := bcs.hashTable[key]; ok {
-		bcs.mutex.Lock()
-		defer bcs.mutex.Unlock()
 		if err := bcs.logStore.Append([]byte(key), []byte{}, &bcs.hashTable); err != nil {
 			return err
 		}

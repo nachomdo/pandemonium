@@ -25,7 +25,7 @@ type BitCaskDecoder struct {
 
 func NewBitCaskEncoder(w io.Writer) *BitCaskEncoder {
 	return &BitCaskEncoder{
-		w: bufio.NewWriter(w),
+		w: bufio.NewWriterSize(w, 1024*1024),
 	}
 }
 

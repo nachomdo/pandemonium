@@ -92,13 +92,13 @@ func TestOverwriteExistingKey(t *testing.T) {
 
 func BenchmarkWriting(b *testing.B) {
 	path, _ := ioutil.TempDir("/tmp", "kvstore_*")
-	defer os.RemoveAll(path)
+	//defer os.RemoveAll(path)
 	db, err := OpenBitCaskStore(path)
 	assert.NoError(b, err)
 
-	value := bytes.Repeat([]byte{0xa}, 4096)
+	value := bytes.Repeat([]byte{0xa}, 8192)
 	b.ResetTimer()
-	b.SetBytes(4096)
+	b.SetBytes(8192)
 	for i := 0; i < b.N; i++ {
 		db.Set(strconv.Itoa(i), value)
 	}

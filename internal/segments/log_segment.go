@@ -173,7 +173,12 @@ func (ls *LogSegment) Rotate() (err error) {
 	}
 
 	ls.activeSegment = false
-	ls.fd.Close()
+	if err := ls.fd.Sync(); err != nil {
+		return err
+	}
+	if err := ls.fd.Close(); err != nil {
+		return err
+	}
 	ls.r.Close()
 	if ls.ra, err = mmap.Open(newPath); err != nil {
 		return err

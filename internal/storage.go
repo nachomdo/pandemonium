@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
+	"github.com/sirupsen/logrus"
 	"pingcap.com/kvs/internal/segments"
 )
 
@@ -26,6 +28,8 @@ type logBasedStorage struct {
 	dataFiles      map[int]*segments.LogSegment
 	currentSegment *segments.LogSegment
 	threshold      int
+	basePath       string
+	condVar        *sync.Cond
 }
 
 func NewLogBasedStorage(path string) (*logBasedStorage, error) {
@@ -64,6 +68,8 @@ func NewLogBasedStorage(path string) (*logBasedStorage, error) {
 	return &logBasedStorage{
 		dataFiles:      dataFiles,
 		currentSegment: currentSegment,
+		basePath:       path,
+		condVar:        sync.NewCond(&sync.Mutex{}),
 	}, nil
 }
 
@@ -111,16 +117,62 @@ func (lbs *logBasedStorage) ReadKeyDirEntry(entry *segments.KeyDirEntry) (value 
 }
 
 func (lbs *logBasedStorage) Append(key []byte, value []byte, kdt *segments.KeyDirTable) error {
+	lbs.condVar.L.Lock()
+	if lbs.currentSegment.Size() > segments.MaxSegmentSizeBytes {
+		lbs.condVar.Signal()
+	}
 	kde, err := lbs.currentSegment.Write(key, value)
 	if err != nil {
 		return err
 	}
 	(*kdt)[string(key)] = kde
+
+	lbs.condVar.L.Unlock()
 	return nil
 }
 
-func (lbs *logBasedStorage) rotateSegments() error {
+func (lbs *logBasedStorage) StartSegmentsWatcher() error {
+	segRotErrCh := lbs.rotateSegments()
+
+	go func() {
+		for {
+			select {
+			case err, ok := <-segRotErrCh:
+				if ok {
+					logrus.Errorf("segment rotation failed %v", err)
+				} else {
+					return
+				}
+			}
+		}
+	}()
 	return nil
+}
+func (lbs *logBasedStorage) rotateSegments() <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		var err error
+		for {
+			lbs.condVar.L.Lock()
+
+			lbs.condVar.Wait()
+
+			fullPath := filepath.Join(lbs.basePath, activeSegmentFilename)
+			if err := lbs.currentSegment.Rotate(); err != nil {
+				errCh <- err
+			}
+
+			segmentID := segments.SegmentID(fullPath, true)
+			lbs.dataFiles[segmentID] = lbs.currentSegment
+			lbs.currentSegment, err = segments.NewLogSegment(fullPath, true)
+
+			lbs.condVar.L.Unlock()
+			if err != nil {
+				errCh <- err
+			}
+		}
+	}()
+	return errCh
 }
 
 func (lbs *logBasedStorage) Close() error {
