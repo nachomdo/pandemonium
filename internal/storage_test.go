@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"pingcap.com/kvs/internal/segments"
 	"pingcap.com/kvs/internal/segments/encoding"
 )
 
@@ -71,4 +73,17 @@ func TestLogBasedStorage(t *testing.T) {
 		_, err := lbs.ReadKeyDirEntry(entry)
 		assert.Error(t, err, "mmap: Closed")
 	})
+}
+func TestSegmentsRotation(t *testing.T) {
+	basePath := emptyDataFolder(t)
+	defer os.RemoveAll(basePath)
+	lbs, err := NewLogBasedStorage(basePath)
+	assert.NoError(t, err)
+	k := []byte("mykey")
+	v := bytes.Repeat([]byte{0xb}, 1024)
+	kdt := make(segments.KeyDirTable)
+	for i := 0; i < 118000; i++ {
+		assert.NoError(t, lbs.Append(k, v, &kdt))
+	}
+	assert.True(t, len(lbs.dataFiles) > 1)
 }

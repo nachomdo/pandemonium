@@ -25,6 +25,7 @@ type LogStorage interface {
 type logBasedStorage struct {
 	dataFiles      map[int]*segments.LogSegment
 	currentSegment *segments.LogSegment
+	basePath       string
 	threshold      int
 }
 
@@ -64,6 +65,7 @@ func NewLogBasedStorage(path string) (*logBasedStorage, error) {
 	return &logBasedStorage{
 		dataFiles:      dataFiles,
 		currentSegment: currentSegment,
+		basePath:       path,
 	}, nil
 }
 
@@ -111,6 +113,11 @@ func (lbs *logBasedStorage) ReadKeyDirEntry(entry *segments.KeyDirEntry) (value 
 }
 
 func (lbs *logBasedStorage) Append(key []byte, value []byte, kdt *segments.KeyDirTable) error {
+	if lbs.currentSegment.Size() > segments.MaxSegmentSizeBytes {
+		if err := lbs.rotateSegments(); err != nil {
+			return err
+		}
+	}
 	kde, err := lbs.currentSegment.Write(key, value)
 	if err != nil {
 		return err
@@ -119,8 +126,16 @@ func (lbs *logBasedStorage) Append(key []byte, value []byte, kdt *segments.KeyDi
 	return nil
 }
 
-func (lbs *logBasedStorage) rotateSegments() error {
-	return nil
+func (lbs *logBasedStorage) rotateSegments() (err error) {
+	fullPath := filepath.Join(lbs.basePath, activeSegmentFilename)
+	if err := lbs.currentSegment.Rotate(); err != nil {
+		return err
+	}
+
+	segmentID := len(lbs.dataFiles) + 1
+	lbs.dataFiles[segmentID] = lbs.currentSegment
+	lbs.currentSegment, err = segments.NewLogSegment(fullPath, true)
+	return err
 }
 
 func (lbs *logBasedStorage) Close() error {
