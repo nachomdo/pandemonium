@@ -2,6 +2,7 @@ package segments
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,10 +16,11 @@ import (
 
 var (
 	regexpSegmentNameFormat = regexp.MustCompile(`segment_(\d{5}).dat`)
+	errNoActiveSegment      = errors.New("error rotating non active segment")
 )
 
 const (
-	maxSegmentSizeBytes = 1 * 1024 * 1000
+	MaxSegmentSizeBytes = 1 * 1024 * 1024
 )
 
 type LogSegment struct {
@@ -152,6 +154,32 @@ func (ls *LogSegment) Write(key, value []byte) (*KeyDirEntry, error) {
 	}
 	ls.segmentSize += readBytes
 	return NewKeyDirEntry(ls.segmentID, offset, readBytes), nil
+}
+
+func (ls *LogSegment) Size() int64 {
+	return ls.segmentSize
+}
+
+func (ls *LogSegment) Rotate() (err error) {
+
+	if !ls.activeSegment {
+		return errNoActiveSegment
+	}
+	newPath := filepath.Join(filepath.Dir(ls.path),
+		fmt.Sprintf("segment_%05d.dat", ls.segmentID))
+
+	if err = os.Rename(ls.path, newPath); err != nil {
+		return err
+	}
+
+	ls.activeSegment = false
+	ls.fd.Close()
+	ls.r.Close()
+	if ls.ra, err = mmap.Open(newPath); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (ls *LogSegment) Close() error {
