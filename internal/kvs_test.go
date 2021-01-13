@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"strconv"
 	"testing"
@@ -92,7 +93,7 @@ func TestOverwriteExistingKey(t *testing.T) {
 
 func BenchmarkWriting(b *testing.B) {
 	path, _ := ioutil.TempDir("/tmp", "kvstore_*")
-	//defer os.RemoveAll(path)
+	defer os.RemoveAll(path)
 	db, err := OpenBitCaskStore(path)
 	assert.NoError(b, err)
 
@@ -102,22 +103,50 @@ func BenchmarkWriting(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		db.Set(strconv.Itoa(i), value)
 	}
+	b.StopTimer()
 }
 
-func BenchmarkReading(b *testing.B) {
+func BenchmarkSequentialReading(b *testing.B) {
 	path, _ := ioutil.TempDir("/tmp", "kvstore_*")
 	defer os.RemoveAll(path)
 
 	db, err := OpenBitCaskStore(path)
 	assert.NoError(b, err)
-	value := bytes.Repeat([]byte{0xa}, 4096)
-	key := "b12"
+	value := bytes.Repeat([]byte{0xa}, 8192)
+	for i := 0; i < b.N; i++ {
+		db.Set(strconv.Itoa(i), value)
+	}
 
-	assert.NoError(b, db.Set(key, value))
+	b.SetBytes(8192)
 	b.ResetTimer()
 
-	b.SetBytes(4096)
 	for i := 0; i < b.N; i++ {
-		db.Get("b12")
+		db.Get(strconv.Itoa(i))
 	}
+	b.StopTimer()
+}
+
+func BenchmarkRandomReading(b *testing.B) {
+	path, _ := ioutil.TempDir("/tmp", "kvstore_*")
+	defer os.RemoveAll(path)
+
+	db, err := OpenBitCaskStore(path)
+	assert.NoError(b, err)
+	value := bytes.Repeat([]byte{0xa}, 8192)
+	precomputed := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		db.Set(strconv.Itoa(i), value)
+		precomputed[i] = i
+	}
+	rand.Shuffle(b.N, func(i int, j int) {
+		precomputed[i] = precomputed[j]
+	})
+
+	b.SetBytes(8192)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		db.Get(strconv.Itoa(precomputed[i]))
+	}
+	b.StopTimer()
 }
