@@ -78,7 +78,9 @@ func (ls *LogSegment) ReadAll() (*KeyDirTable, error) {
 		decoder = encoding.NewBitCaskDecoder(segmentReader)
 	}
 	var offset int64
-	kdir := make(KeyDirTable)
+	kdir := KeyDirTable{
+		Data: make(map[string]*KeyDirEntry),
+	}
 	for {
 		key, _, bytesRead, err := decoder.ReadNext()
 		if err != nil {
@@ -87,7 +89,7 @@ func (ls *LogSegment) ReadAll() (*KeyDirTable, error) {
 			}
 			return nil, fmt.Errorf("error reading segment record: %w", err)
 		}
-		kdir[string(key)] = NewKeyDirEntry(ls.segmentID, offset, bytesRead)
+		kdir.Data[string(key)] = NewKeyDirEntry(ls.segmentID, offset, bytesRead)
 		offset += bytesRead
 	}
 	ls.segmentSize = offset

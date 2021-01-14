@@ -25,6 +25,7 @@ type LogStorage interface {
 type logBasedStorage struct {
 	dataFiles      map[int]*segments.LogSegment
 	currentSegment *segments.LogSegment
+	lastSegmentID  int
 	basePath       string
 	threshold      int
 }
@@ -66,18 +67,19 @@ func NewLogBasedStorage(path string) (*logBasedStorage, error) {
 		dataFiles:      dataFiles,
 		currentSegment: currentSegment,
 		basePath:       path,
+		lastSegmentID:  len(dataFiles) + 1,
 	}, nil
 }
 
 func mergeTables(kdtSrc, kdtTgt segments.KeyDirTable) *segments.KeyDirTable {
-	if kdtSrc == nil {
+	if kdtSrc.Data == nil {
 		return &kdtTgt
 	}
-	if kdtTgt == nil {
+	if kdtTgt.Data == nil {
 		return &kdtSrc
 	}
-	for k, v := range kdtSrc {
-		kdtTgt[k] = v
+	for k, v := range kdtSrc.Data {
+		kdtTgt.Data[k] = v
 	}
 	return &kdtTgt
 }
@@ -90,7 +92,9 @@ func (lbs *logBasedStorage) BuildKeyDirTable() (*segments.KeyDirTable, error) {
 	}
 	sort.Ints(keys)
 
-	kdt := make(segments.KeyDirTable)
+	kdt := segments.KeyDirTable{
+		Data: make(map[string]*segments.KeyDirEntry),
+	}
 	for _, k := range keys {
 		kdtTmp, err := lbs.dataFiles[k].ReadAll()
 		if err != nil {
@@ -122,7 +126,7 @@ func (lbs *logBasedStorage) Append(key []byte, value []byte, kdt *segments.KeyDi
 	if err != nil {
 		return err
 	}
-	(*kdt)[string(key)] = kde
+	kdt.Data[string(key)] = kde
 	return nil
 }
 
@@ -131,9 +135,8 @@ func (lbs *logBasedStorage) rotateSegments() (err error) {
 	if err := lbs.currentSegment.Rotate(); err != nil {
 		return err
 	}
-
-	segmentID := len(lbs.dataFiles) + 1
-	lbs.dataFiles[segmentID] = lbs.currentSegment
+	lbs.lastSegmentID++
+	lbs.dataFiles[lbs.lastSegmentID] = lbs.currentSegment
 	lbs.currentSegment, err = segments.NewLogSegment(fullPath, true)
 	return err
 }

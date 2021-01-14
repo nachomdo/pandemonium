@@ -121,9 +121,12 @@ func BenchmarkSequentialReading(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		db.Get(strconv.Itoa(i))
+		_, _, err := db.Get(strconv.Itoa(i))
+		assert.NoError(b, err)
+		//db.Get(strconv.Itoa(i))
 	}
 	b.StopTimer()
+	db.Close()
 }
 
 func BenchmarkRandomReading(b *testing.B) {

@@ -62,6 +62,7 @@ func (bce *BitCaskEncoder) Write(key, value []byte) (int64, error) {
 	if err != nil {
 		return -1, fmt.Errorf("error serialising key: %w", err)
 	}
+
 	written += tmp
 	if err := bce.w.Flush(); err != nil {
 		return -1, fmt.Errorf("error flushing data: %w", err)

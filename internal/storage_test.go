@@ -48,9 +48,9 @@ func TestLogBasedStorage(t *testing.T) {
 	assert.NoError(t, err)
 	kdt, err := lbs.BuildKeyDirTable()
 	assert.NoError(t, err)
-	assert.Equal(t, 50, len(*kdt))
+	assert.Equal(t, 50, len(kdt.Data))
 	t.Run("read the whole key dir structure", func(t *testing.T) {
-		for k, v := range *kdt {
+		for k, v := range kdt.Data {
 			rv, err := lbs.ReadKeyDirEntry(v)
 			assert.NoError(t, err)
 			assert.Equal(t, fmt.Sprintf("value for key %s", k), string(rv))
@@ -60,7 +60,7 @@ func TestLogBasedStorage(t *testing.T) {
 	t.Run("append new data", func(t *testing.T) {
 		err := lbs.Append([]byte("9999"), []byte("value for key 9999"), kdt)
 		assert.NoError(t, err)
-		lastEntry := (*kdt)["9999"]
+		lastEntry := kdt.Data["9999"]
 		lastValue, err := lbs.ReadKeyDirEntry(lastEntry)
 		assert.NoError(t, err)
 		assert.Equal(t, "value for key 9999", string(lastValue))
@@ -69,7 +69,7 @@ func TestLogBasedStorage(t *testing.T) {
 	t.Run("close all resources", func(t *testing.T) {
 		assert.NoError(t, lbs.Close())
 		// storage closed cannot read values
-		entry := (*kdt)["10"]
+		entry := kdt.Data["10"]
 		_, err := lbs.ReadKeyDirEntry(entry)
 		assert.Error(t, err, "mmap: Closed")
 	})
@@ -81,7 +81,9 @@ func TestSegmentsRotation(t *testing.T) {
 	assert.NoError(t, err)
 	k := []byte("mykey")
 	v := bytes.Repeat([]byte{0xb}, 1024)
-	kdt := make(segments.KeyDirTable)
+	kdt := segments.KeyDirTable{
+		Data: make(map[string]*segments.KeyDirEntry),
+	}
 	for i := 0; i < 118000; i++ {
 		assert.NoError(t, lbs.Append(k, v, &kdt))
 	}
