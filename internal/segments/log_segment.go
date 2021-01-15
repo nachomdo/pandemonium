@@ -168,18 +168,21 @@ func (ls *LogSegment) Rotate() (err error) {
 	newPath := filepath.Join(filepath.Dir(ls.path),
 		fmt.Sprintf("segment_%05d.dat", ls.segmentID))
 
+	ls.activeSegment = false
+
+	if err = ls.fd.Sync(); err != nil {
+		return err
+	}
+	if err = ls.fd.Close(); err != nil {
+		return err
+	}
+	if err = ls.r.Close(); err != nil {
+		return err
+	}
 	if err = os.Rename(ls.path, newPath); err != nil {
 		return err
 	}
 
-	ls.activeSegment = false
-	if err := ls.fd.Sync(); err != nil {
-		return err
-	}
-	if err := ls.fd.Close(); err != nil {
-		return err
-	}
-	ls.r.Close()
 	if ls.ra, err = mmap.Open(newPath); err != nil {
 		return err
 	}

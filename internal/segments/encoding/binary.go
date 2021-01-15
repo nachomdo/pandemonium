@@ -64,7 +64,7 @@ func (bce *BitCaskEncoder) Write(key, value []byte) (int64, error) {
 	}
 	written += tmp
 	if err := bce.w.Flush(); err != nil {
-		return -1, fmt.Errorf("error flushing data: %w", err)
+		return -1, err
 	}
 	return int64(written), nil
 }
@@ -74,7 +74,6 @@ func (bce *BitCaskDecoder) ReadNext() ([]byte, []byte, int64, error) {
 	if _, err := io.ReadFull(bce.r, headerBuffer); err != nil {
 		return nil, nil, -1, err
 	}
-
 	recordMagicNumber := binary.BigEndian.Uint32(headerBuffer[:magicSize])
 	if recordMagicNumber != uint32(magicNumber) {
 		return nil, nil, -1, errInvalidMagicNumber

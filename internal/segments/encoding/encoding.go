@@ -1,6 +1,8 @@
 package encoding
 
-import "errors"
+import (
+	"errors"
+)
 
 var (
 	errInvalidMagicNumber = errors.New("error due to unexpected record magic number")
