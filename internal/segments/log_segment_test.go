@@ -45,7 +45,7 @@ func TestReadAtSegment(t *testing.T) {
 	assert.NoError(t, err)
 	kdt, err := ls.ReadAll()
 	assert.NoError(t, err)
-	for k, v := range kdt.Data {
+	for k, v := range kdt.data {
 		rk, rv, err := ls.ReadAt(v.Offset, v.Size)
 		assert.NoError(t, err)
 		assert.Equal(t, k, string(rk))
@@ -63,17 +63,17 @@ func TestAppendToSegment(t *testing.T) {
 	kdt, err := ls.ReadAll()
 	assert.NoError(t, err)
 	assert.NotNil(t, kdt)
-	kdt.Data["2"], err = ls.Write([]byte("2"), []byte("kombucha"))
+	kdt.data["2"], err = ls.Write([]byte("2"), []byte("kombucha"))
 	assert.NoError(t, err)
 
-	kdt.Data["3"], err = ls.Write([]byte("3"), []byte("oat milk"))
+	kdt.data["3"], err = ls.Write([]byte("3"), []byte("oat milk"))
 	assert.NoError(t, err)
 
-	_, v, err := ls.ReadAt(kdt.Data["2"].Offset, kdt.Data["2"].Size)
+	_, v, err := ls.ReadAt(kdt.data["2"].Offset, kdt.data["2"].Size)
 	assert.NoError(t, err)
 	assert.Equal(t, []byte("kombucha"), v)
 
-	_, v, err = ls.ReadAt(kdt.Data["3"].Offset, kdt.Data["3"].Size)
+	_, v, err = ls.ReadAt(kdt.data["3"].Offset, kdt.data["3"].Size)
 	assert.NoError(t, err)
 	assert.Equal(t, []byte("oat milk"), v)
 

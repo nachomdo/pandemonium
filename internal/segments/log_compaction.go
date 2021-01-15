@@ -66,11 +66,9 @@ func cleanUnusedFiles(basePath string, kdt *KeyDirTable) {
 
 	// :troll: :troll:
 	bloomFilter := make(map[int]bool, len(files))
-	kdt.RLock()
-	for _, v := range kdt.Data {
+	kdt.ForEach(func(k string, v *KeyDirEntry) {
 		bloomFilter[v.FileID] = true
-	}
-	kdt.RUnlock()
+	})
 	for _, f := range files {
 		if _, ok := bloomFilter[SegmentID(f, false)]; !ok {
 			os.Remove(f)

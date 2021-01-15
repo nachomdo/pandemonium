@@ -71,17 +71,17 @@ func NewLogBasedStorage(path string) (*logBasedStorage, error) {
 	}, nil
 }
 
-func mergeTables(kdtSrc, kdtTgt segments.KeyDirTable) *segments.KeyDirTable {
-	if kdtSrc.Data == nil {
-		return &kdtTgt
+func mergeTables(kdtSrc, kdtTgt *segments.KeyDirTable) *segments.KeyDirTable {
+	if kdtSrc.Len() == 0 {
+		return kdtTgt
 	}
-	if kdtTgt.Data == nil {
-		return &kdtSrc
+	if kdtTgt.Len() == 0 {
+		return kdtSrc
 	}
-	for k, v := range kdtSrc.Data {
-		kdtTgt.Data[k] = v
-	}
-	return &kdtTgt
+	kdtSrc.ForEach(func(k string, v *segments.KeyDirEntry) {
+		kdtTgt.Set(k, v)
+	})
+	return kdtTgt
 }
 
 func (lbs *logBasedStorage) BuildKeyDirTable() (*segments.KeyDirTable, error) {
@@ -92,15 +92,13 @@ func (lbs *logBasedStorage) BuildKeyDirTable() (*segments.KeyDirTable, error) {
 	}
 	sort.Ints(keys)
 
-	kdt := segments.KeyDirTable{
-		Data: make(map[string]*segments.KeyDirEntry),
-	}
+	kdt := segments.NewKeyDirTable()
 	for _, k := range keys {
 		kdtTmp, err := lbs.dataFiles[k].ReadAll()
 		if err != nil {
 			return nil, fmt.Errorf("error building key dir table: %w", err)
 		}
-		kdt = *mergeTables(*kdtTmp, kdt)
+		kdt = *mergeTables(kdtTmp, &kdt)
 	}
 
 	return &kdt, nil
@@ -126,7 +124,8 @@ func (lbs *logBasedStorage) Append(key []byte, value []byte, kdt *segments.KeyDi
 	if err != nil {
 		return err
 	}
-	kdt.Data[string(key)] = kde
+	kdt.Set(string(key), kde)
+
 	return nil
 }
 
