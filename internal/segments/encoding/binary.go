@@ -2,6 +2,7 @@ package encoding
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -21,6 +22,11 @@ type BitCaskEncoder struct {
 
 type BitCaskDecoder struct {
 	r io.Reader
+}
+
+type BitCaskMmapDecoder struct {
+	BitCaskDecoder
+	data []byte
 }
 
 func NewBitCaskEncoder(w io.Writer) *BitCaskEncoder {
@@ -87,4 +93,19 @@ func (bce *BitCaskDecoder) ReadNext() ([]byte, []byte, int64, error) {
 	}
 	bytesRead := int64(len(headerBuffer) + len(keyValueBuffer))
 	return keyValueBuffer[:recordKeyLen], keyValueBuffer[recordKeyLen:], bytesRead, nil
+}
+
+func (bcd *BitCaskMmapDecoder) ReadAt(offset int64, size int64) ([]byte, []byte, error) {
+	buffer := make([]byte, size)
+	reader := bytes.NewReader(bcd.data)
+	reader.ReadAt(buffer, offset)
+	recordMagicNumber := binary.BigEndian.Uint32(buffer[:magicSize])
+	if recordMagicNumber != uint32(magicNumber) {
+		return nil, nil, errInvalidMagicNumber
+	}
+	recordKeyLen := binary.BigEndian.Uint32(buffer[magicSize : magicSize+keySize])
+	recordValueLen := binary.BigEndian.Uint64(buffer[magicSize+keySize:])
+	valueBaseOffset := headerSize + recordKeyLen
+	return buffer[headerSize : headerSize+recordKeyLen], buffer[valueBaseOffset : valueBaseOffset+uint32(recordValueLen)], nil
+
 }

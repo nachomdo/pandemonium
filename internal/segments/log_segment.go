@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 
-	"golang.org/x/exp/mmap"
 	"pingcap.com/kvs/internal/segments/encoding"
 )
 
@@ -25,7 +24,7 @@ const (
 
 type LogSegment struct {
 	// read path
-	ra *mmap.ReaderAt
+	ra *encoding.BitCaskMmapDecoder
 	r  *os.File
 	// write path
 	fd      *os.File
@@ -41,7 +40,7 @@ func NewLogSegment(path string, active bool) (*LogSegment, error) {
 	var fd *os.File
 	var r *os.File
 	var err error
-	var ra *mmap.ReaderAt
+	var ra *encoding.BitCaskMmapDecoder
 	if active {
 		fd, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0755)
 		if err != nil {
@@ -52,8 +51,8 @@ func NewLogSegment(path string, active bool) (*LogSegment, error) {
 			return nil, fmt.Errorf("error opening active segment for reading: %v", err)
 		}
 	} else {
-		ra, err = mmap.Open(path)
-		if err != nil {
+		ra = encoding.NewBitCaskMmapDecoder(path)
+		if ra == nil {
 			return nil, fmt.Errorf("error opening segment file: %v", err)
 		}
 	}
@@ -69,13 +68,12 @@ func NewLogSegment(path string, active bool) (*LogSegment, error) {
 }
 
 func (ls *LogSegment) ReadAll() (*KeyDirTable, error) {
-	var decoder *encoding.BitCaskDecoder
+	var decoder encoding.Deserializable
 
 	if ls.activeSegment {
 		decoder = encoding.NewBitCaskDecoder(ls.r)
 	} else {
-		segmentReader := io.NewSectionReader(ls.ra, 0, int64(ls.ra.Len()))
-		decoder = encoding.NewBitCaskDecoder(segmentReader)
+		decoder = ls.ra
 	}
 	var offset int64
 	kdir := make(KeyDirTable)
@@ -94,7 +92,7 @@ func (ls *LogSegment) ReadAll() (*KeyDirTable, error) {
 	return &kdir, nil
 }
 
-func (ls *LogSegment) ReadAt(offset, n int64) ([]byte, []byte, error) {
+func (ls *LogSegment) ReadAt(offset, n int64) (key []byte, value []byte, err error) {
 	var decoder *encoding.BitCaskDecoder
 	if ls.activeSegment {
 		buffer := make([]byte, n)
@@ -102,10 +100,11 @@ func (ls *LogSegment) ReadAt(offset, n int64) ([]byte, []byte, error) {
 			return nil, nil, err
 		}
 		decoder = encoding.NewBitCaskDecoder(bytes.NewReader(buffer))
+
+		key, value, _, err = decoder.ReadNext()
 	} else {
-		decoder = encoding.NewBitCaskDecoder(io.NewSectionReader(ls.ra, offset, n))
+		key, value, err = ls.ra.ReadAt(offset, n)
 	}
-	key, value, _, err := decoder.ReadNext()
 
 	if err != nil {
 		return nil, nil, err
@@ -183,7 +182,7 @@ func (ls *LogSegment) Rotate() (err error) {
 		return err
 	}
 
-	if ls.ra, err = mmap.Open(newPath); err != nil {
+	if ls.ra = encoding.NewBitCaskMmapDecoder(newPath); err != nil {
 		return err
 	}
 
@@ -201,10 +200,6 @@ func (ls *LogSegment) Close() error {
 		}
 		if err := ls.r.Close(); err != nil {
 			return fmt.Errorf("error closing read only fd: %w", err)
-		}
-	} else {
-		if err := ls.ra.Close(); err != nil {
-			return fmt.Errorf("error closing mmap fd: %w", err)
 		}
 	}
 	return nil
